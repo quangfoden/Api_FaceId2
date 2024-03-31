@@ -1,7 +1,7 @@
 import cv2
 import os
 from flask import jsonify
-from flask import Flask, request, render_template,redirect, url_for
+from flask import Flask, request, render_template,redirect, url_for,send_file
 from datetime import date
 import mysql.connector
 from datetime import datetime
@@ -10,6 +10,9 @@ from sklearn.neighbors import KNeighborsClassifier
 import pandas as pd
 import joblib
 import time
+import io
+from PIL import Image
+import torch
 from flask_cors import CORS
 import shutil
 
@@ -18,8 +21,9 @@ CORS(app)
 
 nimgs = 10
 camera_opened = False
-imgBackground = cv2.imread("bg.jpg")
+imgBackground = cv2.imread("bg3.jpg")
 
+# 'haarcascade_frontalface_default.xml' chứa một mô hình để phát hiện khuôn mặt phía trước trong ảnh
 face_detector = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
 
 if not os.path.isdir('static'):
@@ -123,24 +127,23 @@ def start():
                 # Thực hiện hành động sau khi đăng nhập thất bại
                 success = False
            
-        # Kích thước mới cho hình ảnh cam
         new_width = 400  # Đặt chiều rộng mới
         new_height = 400  # Đặt chiều cao mới
 
         # Thay đổi kích thước của hình ảnh cam
         small_frame = cv2.resize(frame, (new_width, new_height))
 
-        # Tạo mask trắng có hình dạng hình tròn
-        mask = np.zeros((new_height, new_width), dtype=np.uint8)
-        center_coordinates = (new_width // 2, new_height // 2)
-        radius = min(new_width, new_height) // 2
-        cv2.circle(mask, center_coordinates, radius, (255), -1)
+        # Tạo mask trắng có hình dạng hình vuông
+        mask = np.ones((new_height, new_width), dtype=np.uint8) * 255
 
-        # Áp dụng mask lên hình ảnh cam
-        masked_frame = cv2.bitwise_and(small_frame, small_frame, mask=mask)
+        # Điều chỉnh vị trí của hình ảnh cam trong imgBackground
+        top = 200  # chỉ mục hàng đầu tiên của vùng muốn gán hình ảnh cam vào
+        bottom = top + new_height  # chỉ mục hàng cuối cùng của vùng muốn gán hình ảnh cam vào
+        left = 450  # chỉ mục cột đầu tiên của vùng muốn gán hình ảnh cam vào
+        right = left + new_width  # chỉ mục cột cuối cùng của vùng muốn gán hình ảnh cam vào
 
-        # Gán hình ảnh cam có khung hình tròn vào imgBackground
-        imgBackground[162:162 + new_height, 55:55 + new_width] = masked_frame
+        # Gán hình ảnh cam vào imgBackground
+        imgBackground[top:bottom, left:right] = small_frame
 
         cv2.imshow('login', imgBackground)
         if cv2.waitKey(1) == 27:
@@ -204,24 +207,25 @@ def add():
             j += 1
         if j == nimgs*5:
             break
-          # Kích thước mới cho hình ảnh cam
+
         new_width = 400  # Đặt chiều rộng mới
         new_height = 400  # Đặt chiều cao mới
 
         # Thay đổi kích thước của hình ảnh cam
         small_frame = cv2.resize(frame, (new_width, new_height))
 
-        # Tạo mask trắng có hình dạng hình tròn
-        mask = np.zeros((new_height, new_width), dtype=np.uint8)
-        center_coordinates = (new_width // 2, new_height // 2)
-        radius = min(new_width, new_height) // 2
-        cv2.circle(mask, center_coordinates, radius, (255), -1)
+        # Tạo mask trắng có hình dạng hình vuông
+        mask = np.ones((new_height, new_width), dtype=np.uint8) * 255
 
-        # Áp dụng mask lên hình ảnh cam
-        masked_frame = cv2.bitwise_and(small_frame, small_frame, mask=mask)
+        # Điều chỉnh vị trí của hình ảnh cam trong imgBackground
+        top = 200  # chỉ mục hàng đầu tiên của vùng muốn gán hình ảnh cam vào
+        bottom = top + new_height  # chỉ mục hàng cuối cùng của vùng muốn gán hình ảnh cam vào
+        left = 450  # chỉ mục cột đầu tiên của vùng muốn gán hình ảnh cam vào
+        right = left + new_width  # chỉ mục cột cuối cùng của vùng muốn gán hình ảnh cam vào
 
-        # Gán hình ảnh cam có khung hình tròn vào imgBackground
-        imgBackground[162:162 + new_height, 55:55 + new_width] = masked_frame
+        # Gán hình ảnh cam vào imgBackground
+        imgBackground[top:bottom, left:right] = small_frame
+
         cv2.imshow('add', imgBackground)
         if cv2.waitKey(1) == 27:
             break
@@ -247,6 +251,36 @@ def delete_face():
             return jsonify({'status': 'error', 'message': 'Khuôn mặt không tồn tại trong cơ sở dữ liệu'}), 404
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
+# Load YOLOv5 model
+model = torch.hub.load("ultralytics/yolov5", "yolov5s", force_reload=True, skip_validation=True)
+
+@app.route('/checkimage', methods=["POST"])
+def check_image():
+    """Receive an image from the client, perform object detection, and return the annotated image."""
+    if request.method != "POST":
+        return "Method not allowed", 405
+
+    if request.files.get("image"):
+        # Read the image from the client
+        image_file = request.files["image"]
+        image_bytes = image_file.read()
+        image_pil = Image.open(io.BytesIO(image_bytes))
+
+        # Perform object detection
+        results = model(image_pil, size=640)
+
+        # Get annotated image (take the first element in the results list)
+        annotated_image = results.render()[0]
+
+        # Convert the annotated image to bytes
+        image_output = io.BytesIO()
+        Image.fromarray(annotated_image).save(image_output, format="JPEG")
+        image_output.seek(0)
+
+        # Return the annotated image back to the client
+        return send_file(image_output, mimetype="image/jpeg")
+
+    return "No image file provided", 400
 
 if __name__ == '__main__':
     app.run(debug=True)
